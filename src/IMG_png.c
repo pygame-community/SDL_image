@@ -115,6 +115,8 @@ static struct {
     jmp_buf* (*png_set_longjmp_fn) (png_structrp, png_longjmp_ptr, size_t);
 #endif
 #endif
+    int (*png_image_begin_read_from_memory) (png_imagep image, png_const_voidp memory, size_t size);
+    int (*png_image_finish_read) (png_imagep image, png_const_colorp background, void *buffer, png_int_32 row_stride, void *colormap);
 #if SDL_IMAGE_SAVE_PNG
     png_structp (*png_create_write_struct) (png_const_charp user_png_ver, png_voidp error_ptr, png_error_ptr error_fn, png_error_ptr warn_fn);
     void (*png_destroy_write_struct) (png_structpp png_ptr_ptr, png_infopp info_ptr_ptr);
@@ -170,6 +172,8 @@ int IMG_InitPNG()
         FUNCTION_LOADER(png_set_longjmp_fn, jmp_buf* (*) (png_structrp, png_longjmp_ptr, size_t))
 #endif
 #endif
+        FUNCTION_LOADER(png_image_begin_read_from_memory, int (*) (png_imagep image, png_const_voidp memory, size_t size))
+        FUNCTION_LOADER(png_image_finish_read, int (*) (png_imagep image, png_const_colorp background, void *buffer, png_int_32 row_stride, void *colormap))
 #if SDL_IMAGE_SAVE_PNG
         FUNCTION_LOADER(png_create_write_struct, png_structp (*) (png_const_charp user_png_ver, png_voidp error_ptr, png_error_ptr error_fn, png_error_ptr warn_fn))
         FUNCTION_LOADER(png_destroy_write_struct, void (*) (png_structpp png_ptr_ptr, png_infopp info_ptr_ptr))
@@ -224,6 +228,118 @@ int IMG_isPNG(SDL_RWops *src)
     return(is_PNG);
 }
 
+SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src) {
+    png_image image;
+    Sint64 src_length;
+    Uint8* raw_image_buffer;
+    SDL_Surface *surface;
+    SDL_Palette* palette = NULL;
+    void* colormap = NULL;
+    Uint32 pixelformat;
+
+    if ( (IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) == 0 ) {
+        return NULL;
+    }
+
+    /* This function uses libpng's "Simplified API" to read a PNG.
+     * See https://github.com/pnggroup/libpng/blob/libpng16/libpng-manual.txt
+     * And https://github.com/pnggroup/libpng/blob/libpng16/contrib/examples/pngtopng.c
+     * For information about this and example usage, respectively. */
+
+    /* Only the image structure version number needs to be set. */
+    SDL_memset(&image, 0, sizeof(image));
+    image.version = PNG_IMAGE_VERSION;
+
+    src_length = SDL_RWsize(src); //todo error check
+
+    printf("src_length=%i\n", src_length);
+
+    raw_image_buffer = SDL_malloc(src_length); // ec
+    SDL_RWseek(src, RW_SEEK_SET, 0); // ec
+    int objects_read = SDL_RWread(src, raw_image_buffer, 1, src_length); // ec
+
+    printf("objects_read=%i\n", objects_read);
+
+    if (lib.png_image_begin_read_from_memory(&image, raw_image_buffer, src_length)) {
+        /* If the image is natively encoded with a colormap, set the format to
+        /* PNG_FORMAT_RGBA_COLORMAP. This allows libpng to directly map into the
+        /* colors of an allocated SDL_Palette. Libpng handles mapping the native
+        /* colormap format into this consistent format. */
+
+        if (image.format & PNG_FORMAT_FLAG_COLORMAP) {
+            image.format = PNG_FORMAT_RGBA_COLORMAP;
+            pixelformat = SDL_PIXELFORMAT_INDEX8;
+
+            palette = SDL_AllocPalette(image.colormap_entries);
+            colormap = palette->colors;
+            SDL_assert(PNG_IMAGE_COLORMAP_SIZE(image) == palette->ncolors * 4);
+        }
+
+        /* Otherwise, maps the existing PNG format to a SDL pixelformatenum.
+        /* If no mapping is found it falls down to a default, libpng handles
+        /* conversion. */
+        else {
+            switch (image.format) {
+                case PNG_FORMAT_RGBA:
+                    pixelformat = SDL_PIXELFORMAT_RGBA32;
+                    break;
+                case PNG_FORMAT_ARGB:
+                    pixelformat = SDL_PIXELFORMAT_ARGB32;
+                    break;
+
+                /* Lets have grey alpha -> BGRA */
+                case PNG_FORMAT_GA:
+                    image.format = PNG_FORMAT_BGRA;
+                case PNG_FORMAT_BGRA:
+                    pixelformat = SDL_PIXELFORMAT_BGRA32;
+                    break;
+
+                case PNG_FORMAT_ABGR:
+                    pixelformat = SDL_PIXELFORMAT_ABGR32;
+                    break;
+
+                /* Lets have gray (no alpha) -> RGB */
+                case PNG_FORMAT_GRAY:
+                    image.format = PNG_FORMAT_RGB;
+                case PNG_FORMAT_RGB:
+    #if SDL_BYTEORDER == SDL_BIG_ENDIAN
+                    pixelformat = SDL_PIXELFORMAT_BGR24;
+    #else
+                    pixelformat = SDL_PIXELFORMAT_RGB24;
+    #endif
+                    break;
+                case PNG_FORMAT_BGR:
+    #if SDL_BYTEORDER == SDL_BIG_ENDIAN
+                    pixelformat = SDL_PIXELFORMAT_RGB24;
+    #else
+                    pixelformat = SDL_PIXELFORMAT_BGR24;
+    #endif
+                    break;
+
+                /* If it's another format, lets use BGRA by default */
+                default:
+                    image.format = PNG_FORMAT_BGRA;
+                    pixelformat = SDL_PIXELFORMAT_BGRA32;         
+            }
+        }
+
+        surface = SDL_CreateRGBSurfaceWithFormat(0, image.width, image.height, 0, pixelformat);
+
+        if (palette != NULL) {
+            SDL_SetSurfacePalette(surface, palette);
+        }
+  
+        lib.png_image_finish_read(&image, NULL, surface->pixels, surface->pitch, colormap);
+
+        return surface;
+    }
+
+    printf("image.message=%s\n", image.message);
+
+    SDL_SetError("FAILED");
+    return NULL;
+}
+
 /* Load a PNG type image from an SDL datasource */
 static void png_read_data(png_structp ctx, png_bytep area, png_size_t size)
 {
@@ -232,7 +348,7 @@ static void png_read_data(png_structp ctx, png_bytep area, png_size_t size)
     src = (SDL_RWops *)lib.png_get_io_ptr(ctx);
     SDL_RWread(src, area, size, 1);
 }
-SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
+SDL_Surface *IMG_LoadPNG_RW2(SDL_RWops *src)
 {
     Sint64 start;
     const char *error;
@@ -315,9 +431,13 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
      */
     lib.png_set_packing(png_ptr);
 
+    printf("COLOR TYPE = %i\n", color_type);
+
     /* scale greyscale values to the range 0..255 */
-    if (color_type == PNG_COLOR_TYPE_GRAY)
+    if (color_type == PNG_COLOR_TYPE_GRAY) {
+        printf("COLOR TYPE GRAY\n");
         lib.png_set_expand(png_ptr);
+    }     
 
     /* For images with a single "transparent colour", set colour key;
        if more than one index has transparency, or if partially transparent
@@ -327,7 +447,9 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
         int num_trans;
         Uint8 *trans;
         lib.png_get_tRNS(png_ptr, info_ptr, &trans, &num_trans, &transv);
+        printf("here in the club\n");
         if (color_type == PNG_COLOR_TYPE_PALETTE) {
+            printf("wowowowo\n");
             /* Check if all tRNS entries are opaque except one */
             int j, t = -1;
             for (j = 0; j < num_trans; j++) {
@@ -352,6 +474,8 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
         }
     }
 
+    printf("done with that stuff\n");
+
     if ( color_type == PNG_COLOR_TYPE_GRAY_ALPHA )
         lib.png_set_gray_to_rgb(png_ptr);
 
@@ -362,6 +486,8 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
 
     /* Allocate the SDL surface to hold the image */
     num_channels = lib.png_get_channels(png_ptr, info_ptr);
+
+    printf("bit_depth = %i, num_channels = %i\n", bit_depth, num_channels);
 
     format = SDL_PIXELFORMAT_UNKNOWN;
     if (num_channels == 3) {
@@ -402,6 +528,13 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src)
     }
 
     if (ckey != -1) {
+        if (color_type == PNG_COLOR_TYPE_GRAY) {
+            /* FIXME: Should these be truncated or shifted down? */
+            ckey = SDL_MapRGB(surface->format,
+                         (Uint8)transv->gray,
+                         (Uint8)transv->gray,
+                         (Uint8)transv->gray);
+        }
         if (color_type != PNG_COLOR_TYPE_PALETTE) {
             /* FIXME: Should these be truncated or shifted down? */
             ckey = SDL_MapRGB(surface->format,
