@@ -117,6 +117,7 @@ static struct {
 #endif
     int (*png_image_begin_read_from_memory) (png_imagep image, png_const_voidp memory, size_t size);
     int (*png_image_finish_read) (png_imagep image, png_const_colorp background, void *buffer, png_int_32 row_stride, void *colormap);
+    void (*png_image_free) (png_imagep image);
 #if SDL_IMAGE_SAVE_PNG
     png_structp (*png_create_write_struct) (png_const_charp user_png_ver, png_voidp error_ptr, png_error_ptr error_fn, png_error_ptr warn_fn);
     void (*png_destroy_write_struct) (png_structpp png_ptr_ptr, png_infopp info_ptr_ptr);
@@ -174,6 +175,7 @@ int IMG_InitPNG()
 #endif
         FUNCTION_LOADER(png_image_begin_read_from_memory, int (*) (png_imagep image, png_const_voidp memory, size_t size))
         FUNCTION_LOADER(png_image_finish_read, int (*) (png_imagep image, png_const_colorp background, void *buffer, png_int_32 row_stride, void *colormap))
+        FUNCTION_LOADER(png_image_free, void (*) (png_imagep image))
 #if SDL_IMAGE_SAVE_PNG
         FUNCTION_LOADER(png_create_write_struct, png_structp (*) (png_const_charp user_png_ver, png_voidp error_ptr, png_error_ptr error_fn, png_error_ptr warn_fn))
         FUNCTION_LOADER(png_destroy_write_struct, void (*) (png_structpp png_ptr_ptr, png_infopp info_ptr_ptr))
@@ -229,6 +231,7 @@ int IMG_isPNG(SDL_RWops *src)
 }
 
 SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src) {
+    Sint64 start;
     png_image image;
     Sint64 src_length;
     Uint8* raw_image_buffer;
@@ -237,28 +240,51 @@ SDL_Surface *IMG_LoadPNG_RW(SDL_RWops *src) {
     void* colormap = NULL;
     Uint32 pixelformat;
 
-    if ( (IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) == 0 ) {
-        return NULL;
-    }
-
     /* This function uses libpng's "Simplified API" to read a PNG.
      * See https://github.com/pnggroup/libpng/blob/libpng16/libpng-manual.txt
      * And https://github.com/pnggroup/libpng/blob/libpng16/contrib/examples/pngtopng.c
      * For information about this and example usage, respectively. */
 
+    if ( !src ) {
+        /* The error message has been set in SDL_RWFromFile */
+        return NULL;
+    }
+    start = SDL_RWtell(src);
+    if (start < 0) {
+        return NULL; /*SDL error already set*/ 
+    }
+
+    if ( (IMG_Init(IMG_INIT_PNG) & IMG_INIT_PNG) == 0 ) {
+        return NULL;
+    }
+
     /* Only the image structure version number needs to be set. */
     SDL_memset(&image, 0, sizeof(image));
     image.version = PNG_IMAGE_VERSION;
 
-    src_length = SDL_RWsize(src); //todo error check
+    src_length = SDL_RWsize(src);
+    if (src_length < 0) {
+        return NULL; /*SDL error already set*/ 
+    }
+    if (src_length == 0) {
+        SDL_SetError("Cannot load PNG from length-0 RWops.");
+        return NULL;
+    }
 
-    printf("src_length=%i\n", src_length);
+    /* Rewind to beginning of buffer to read entire thing. */
+    if (SDL_RWseek(src, RW_SEEK_SET, 0) < 0) {
+        return NULL; /*SDL error already set*/
+    }
 
-    raw_image_buffer = SDL_malloc(src_length); // ec
-    SDL_RWseek(src, RW_SEEK_SET, 0); // ec
+    raw_image_buffer = SDL_malloc(src_length);
+    if (raw_image_buffer == NULL) {
+        SDL_OutOfMemory();
+        return NULL;
+    }
+    
     int objects_read = SDL_RWread(src, raw_image_buffer, 1, src_length); // ec
 
-    printf("objects_read=%i\n", objects_read);
+    //printf("objects_read=%i\n", objects_read);
 
     if (lib.png_image_begin_read_from_memory(&image, raw_image_buffer, src_length)) {
         /* If the image is natively encoded with a colormap, set the format to
