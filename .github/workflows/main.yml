@@ -53,7 +53,7 @@ jobs:
           cp README.txt upload_prep/README.txt
           cp LICENSE.txt upload_prep/LICENSE.txt
 
-      - uses: actions/upload-artifact@v3
+      - uses: actions/upload-artifact@v4
         with:
-          name: SDL-image-build
+          name: SDL-image-build-${{ matrix.arch }}
           path: upload_prep
