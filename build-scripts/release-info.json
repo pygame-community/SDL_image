@@ -95,7 +95,7 @@
       ],
       "optional": [
         "VisualC/external/optional/@<@ARCH@>@/libavif-16.dll",
-        "VisualC/external/optional/@<@ARCH@>@/libtiff-5.dll",
+        "VisualC/external/optional/@<@ARCH@>@/libtiff-6.dll",
         "VisualC/external/optional/@<@ARCH@>@/libwebp-7.dll",
         "VisualC/external/optional/@<@ARCH@>@/libwebpdemux-2.dll",
         "VisualC/external/optional/@<@ARCH@>@/LICENSE.avif.txt",
@@ -115,7 +115,7 @@
       ],
       "lib/@<@ARCH@>@/optional": [
         "VisualC/external/optional/@<@ARCH@>@/libavif-16.dll",
-        "VisualC/external/optional/@<@ARCH@>@/libtiff-5.dll",
+        "VisualC/external/optional/@<@ARCH@>@/libtiff-6.dll",
         "VisualC/external/optional/@<@ARCH@>@/libwebp-7.dll",
         "VisualC/external/optional/@<@ARCH@>@/libwebpdemux-2.dll",
         "VisualC/external/optional/@<@ARCH@>@/LICENSE.avif.txt",
